@@ -26,8 +26,7 @@ jobs:
     runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-stage-us-east-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     environment: stage-us-east
     outputs:
-      image_manifest_b64: ${{ steps.capture-image.outputs.image_manifest_b64 }}
-      image_manifest_media_type: ${{ steps.capture-image.outputs.image_manifest_media_type }}
+      resolved_image_uri: ${{ steps.capture-image.outputs.resolved_image_uri }}
 
     steps:
     - name: Checkout Code
@@ -40,6 +39,11 @@ jobs:
         java-version: '21'
         distribution: 'corretto'
         cache: maven
+
+    - name: Set up Node 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
     
     - name: Install the latest AWS CDK
       run: |
@@ -127,38 +131,7 @@ jobs:
           --query 'Code.ResolvedImageUri' \
           --output text)
 
-        REPOSITORY_NAME="${RESOLVED_IMAGE_URI%@*}"
-        REPOSITORY_NAME="${REPOSITORY_NAME#*.amazonaws.com/}"
-        IMAGE_DIGEST="${RESOLVED_IMAGE_URI#*@}"
-
-        IMAGE_MANIFEST=$(aws ecr batch-get-image \
-          --repository-name "$REPOSITORY_NAME" \
-          --image-ids imageDigest="$IMAGE_DIGEST" \
-          --accepted-media-types \
-            application/vnd.docker.distribution.manifest.v2+json \
-            application/vnd.oci.image.manifest.v1+json \
-          --query 'images[0].imageManifest' \
-          --output text)
-
-        IMAGE_MANIFEST_MEDIA_TYPE=$(aws ecr batch-get-image \
-          --repository-name "$REPOSITORY_NAME" \
-          --image-ids imageDigest="$IMAGE_DIGEST" \
-          --accepted-media-types \
-            application/vnd.docker.distribution.manifest.v2+json \
-            application/vnd.oci.image.manifest.v1+json \
-          --query 'images[0].imageManifestMediaType' \
-          --output text)
-
-        if [ -z "$IMAGE_MANIFEST_MEDIA_TYPE" ] || [ "$IMAGE_MANIFEST_MEDIA_TYPE" = "None" ]; then
-          IMAGE_MANIFEST_MEDIA_TYPE="application/vnd.docker.distribution.manifest.v2+json"
-        fi
-
-        IMAGE_MANIFEST_B64=$(printf '%s' "$IMAGE_MANIFEST" | base64 -w 0)
-
-        {
-          echo "image_manifest_b64=$IMAGE_MANIFEST_B64"
-          echo "image_manifest_media_type=$IMAGE_MANIFEST_MEDIA_TYPE"
-        } >> "$GITHUB_OUTPUT"
+        echo "resolved_image_uri=$RESOLVED_IMAGE_URI" >> "$GITHUB_OUTPUT"
         
     - name: Rollback Lambda Alias if Tests Fail
       if: failure() && steps.scan-tests.outcome == 'failure'
@@ -198,6 +171,11 @@ jobs:
         distribution: 'corretto'
         cache: maven
 
+    - name: Set up Node 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
     - name: Install the latest AWS CDK
       run: |
         npm install -g aws-cdk
@@ -233,17 +211,21 @@ jobs:
 
     - name: Promote Tested Image Into Production ECR
       run: |
+        SOURCE_IMAGE_URI="${{ needs.deploy-stage.outputs.resolved_image_uri }}"
+        SOURCE_REGISTRY="${SOURCE_IMAGE_URI%%/*}"
         TARGET_REPOSITORY_NAME="cdk-hnb659fds-container-assets-${AWS_ACCOUNT_ID}-${{ vars.AWS_REGION || 'us-east-1' }}"
         PROMOTED_IMAGE_TAG="promoted-${GITHUB_SHA}"
+        TARGET_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com/${TARGET_REPOSITORY_NAME}:${PROMOTED_IMAGE_TAG}"
 
-        printf '%s' '${{ needs.deploy-stage.outputs.image_manifest_b64 }}' | base64 -d > /tmp/promoted-image-manifest.json
-        IMAGE_MANIFEST="$(tr -d '\n' < /tmp/promoted-image-manifest.json)"
+        aws ecr get-login-password --region "${{ vars.AWS_REGION || 'us-east-1' }}" | \
+          docker login --username AWS --password-stdin "$SOURCE_REGISTRY"
 
-        aws ecr put-image \
-          --repository-name "$TARGET_REPOSITORY_NAME" \
-          --image-manifest "$IMAGE_MANIFEST" \
-          --image-manifest-media-type "${{ needs.deploy-stage.outputs.image_manifest_media_type }}" \
-          --image-tag "$PROMOTED_IMAGE_TAG"
+        aws ecr get-login-password --region "${{ vars.AWS_REGION || 'us-east-1' }}" | \
+          docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com"
+
+        docker pull "$SOURCE_IMAGE_URI"
+        docker tag "$SOURCE_IMAGE_URI" "$TARGET_IMAGE_URI"
+        docker push "$TARGET_IMAGE_URI"
 
         PROMOTED_IMAGE_DIGEST=$(aws ecr describe-images \
           --repository-name "$TARGET_REPOSITORY_NAME" \
