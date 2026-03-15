@@ -1,5 +1,5 @@
-# Builder stage: use Ubuntu to install ClamAV and run freshclam.
-FROM ubuntu:20.04 AS builder
+# Builder stage: use a modern Ubuntu base so apt installs a supported ClamAV.
+FROM ubuntu:24.04 AS builder
 
 # Prevent interactive prompts.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -54,4 +54,3 @@ COPY lambda-jar/lambda-1.0.jar ${LAMBDA_TASK_ROOT}/lib/
 
 # Specify the Lambda handler (in the format Package.Class::method).
 CMD [ "cloud.cleo.clamav.lambda.ScanningLambda::handleRequest" ]
-
