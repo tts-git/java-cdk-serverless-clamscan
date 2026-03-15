@@ -25,8 +25,6 @@ jobs:
     name: deploy (stage-us-east)
     runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-stage-us-east-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     environment: stage-us-east
-    outputs:
-      resolved_image_uri: ${{ steps.capture_image.outputs.resolved_image_uri }}
 
     steps:
     - name: Checkout Code
@@ -117,7 +115,7 @@ jobs:
         echo "Running Virus Scan Validation Tests..."
         mvn --batch-mode --no-transfer-progress exec:java
 
-    - name: Capture Tested Image Manifest For Promotion
+    - name: Capture Tested Image URI For Promotion
       id: capture_image
       working-directory: ./cdk
       run: |
@@ -131,7 +129,14 @@ jobs:
           --query 'Code.ResolvedImageUri' \
           --output text)
 
-        echo "resolved_image_uri=$RESOLVED_IMAGE_URI" >> "$GITHUB_OUTPUT"
+        printf '%s' "$RESOLVED_IMAGE_URI" > "$RUNNER_TEMP/resolved-image-uri.txt"
+
+    - name: Upload Tested Image URI
+      uses: actions/upload-artifact@v4
+      with:
+        name: tested-image-uri
+        path: ${{ runner.temp }}/resolved-image-uri.txt
+        if-no-files-found: error
         
     - name: Rollback Lambda Alias if Tests Fail
       if: failure() && steps.scan-tests.outcome == 'failure'
@@ -205,13 +210,19 @@ jobs:
         echo "BUCKET_NAMES=${{ vars.S3_BUCKET_NAMES }}" >> $GITHUB_ENV
         echo "Final list of bucket names to deploy against: ${{ vars.S3_BUCKET_NAMES }}"
 
+    - name: Download Tested Image URI
+      uses: actions/download-artifact@v4
+      with:
+        name: tested-image-uri
+        path: ${{ runner.temp }}/tested-image-uri
+
     - name: Ensure CDK is bootstraped and up to date
       working-directory: ./cdk
       run: cdk bootstrap --ci=true aws://${AWS_ACCOUNT_ID}/${{ vars.AWS_REGION || 'us-east-1' }}
 
     - name: Promote Tested Image Into Production ECR
       run: |
-        SOURCE_IMAGE_URI="${{ needs.deploy-stage.outputs.resolved_image_uri }}"
+        SOURCE_IMAGE_URI="$(cat "$RUNNER_TEMP/tested-image-uri/resolved-image-uri.txt")"
         if [ -z "$SOURCE_IMAGE_URI" ]; then
           echo "Stage job did not provide a resolved image URI for promotion." >&2
           exit 1
