@@ -10,22 +10,14 @@ RUN apt-get update -y && \
 # Copy Clamscan
 RUN cp /usr/bin/clamscan /tmp/
 
-# Detect platform and copy libraries
+# Collect the runtime-linked shared libraries for clamscan and libclamav.
 RUN mkdir -p /tmp/clamav_libs && \
-    ARCH=$(uname -m) && \
-    LIB_DIR="/lib/$ARCH-linux-gnu" && \
-    echo "Detected architecture: $ARCH, copying libraries from $LIB_DIR" && \
-    cp ${LIB_DIR}/libclamav.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libjson-c.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libbz2.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libltdl.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libxml2.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libmspack.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libcrypto.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/libz.so.* /tmp/clamav_libs/ && \
-    (cp ${LIB_DIR}/libtfm.so.* /tmp/clamav_libs/ || true) && \
-    cp ${LIB_DIR}/libpcre2-8.so.* /tmp/clamav_libs/ && \
-    cp ${LIB_DIR}/liblzma.so.* /tmp/clamav_libs/
+    LIBCLAMAV=$(find /usr/lib -path '*/libclamav.so.*' | head -n 1) && \
+    echo "Collecting runtime libraries for /usr/bin/clamscan and $LIBCLAMAV" && \
+    ldd /usr/bin/clamscan "$LIBCLAMAV" | \
+    awk '/=> \// { print $3 } /^\/[^[:space:]]+/ { print $1 }' | \
+    sort -u | \
+    xargs -I '{}' cp -v '{}' /tmp/clamav_libs/
 
 
 # Create a directory for the definitions and run freshclam to update them.
