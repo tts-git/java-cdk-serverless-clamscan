@@ -39,7 +39,7 @@ jobs:
         cache: maven
 
     - name: Set up Node 20
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: '20'
     
@@ -132,7 +132,7 @@ jobs:
         printf '%s' "$RESOLVED_IMAGE_URI" > "$RUNNER_TEMP/resolved-image-uri.txt"
 
     - name: Upload Tested Image URI
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: tested-image-uri
         path: ${{ runner.temp }}/resolved-image-uri.txt
@@ -177,7 +177,7 @@ jobs:
         cache: maven
 
     - name: Set up Node 20
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: '20'
 
@@ -211,7 +211,7 @@ jobs:
         echo "Final list of bucket names to deploy against: ${{ vars.S3_BUCKET_NAMES }}"
 
     - name: Download Tested Image URI
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: tested-image-uri
         path: ${{ runner.temp }}/tested-image-uri
