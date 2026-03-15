@@ -12,6 +12,8 @@ import software.amazon.awscdk.RemovalPolicy;
 import software.amazon.awscdk.Size;
 import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
+import software.amazon.awscdk.services.ecr.IRepository;
+import software.amazon.awscdk.services.ecr.Repository;
 import software.amazon.awscdk.services.ecr.assets.DockerImageAsset;
 import software.amazon.awscdk.services.ecr.assets.Platform;
 import software.amazon.awscdk.services.iam.AnyPrincipal;
@@ -81,14 +83,7 @@ public class ClamavLambdaStack extends Stack {
             }
         }
 
-        // Build the Docker image asset.
-        // The bundling step runs a Maven build using a Maven image that supports Java 21,
-        // then copies the produced JAR into the asset output so that the Dockerfile COPY
-        // instruction (which expects target/lambda.jar) works properly.
-        DockerImageAsset imageAsset = DockerImageAsset.Builder.create(this, "ClamavLambdaImage")
-                .platform(isCloudShell() ? Platform.LINUX_AMD64 : Platform.LINUX_ARM64)
-                .directory(".")
-                .build();
+        DockerImageCode lambdaCode = getLambdaCode();
 
         // Create custom log group first
         LogGroup customLogGroup = LogGroup.Builder.create(this, LAMBDA_NAME + "LogGroup")
@@ -99,8 +94,7 @@ public class ClamavLambdaStack extends Stack {
 
         // Create a Docker-based Lambda function using the built image.
         DockerImageFunction lambdaFunction = DockerImageFunction.Builder.create(this, LAMBDA_NAME)
-                .code(DockerImageCode.fromEcr(imageAsset.getRepository(),
-                        EcrImageCodeProps.builder().tagOrDigest(imageAsset.getImageTag()).build()))
+                .code(lambdaCode)
                 //
                 // We use ARM because its cheaper for CPU bound executions like CLamAV scanning
                 .architecture(isCloudShell() ? Architecture.X86_64 : Architecture.ARM_64)
@@ -218,6 +212,35 @@ public class ClamavLambdaStack extends Stack {
             return "true".equalsIgnoreCase(str.trim());
         }
         return defaultValue;
+    }
+
+    private String getContextString(String key) {
+        Object contextValue = this.getNode().tryGetContext(key);
+        if (contextValue instanceof String str) {
+            String trimmed = str.trim();
+            return trimmed.isEmpty() ? null : trimmed;
+        }
+        return null;
+    }
+
+    private DockerImageCode getLambdaCode() {
+        String imageRepositoryName = getContextString("imageRepositoryName");
+        String imageTagOrDigest = getContextString("imageTagOrDigest");
+
+        if (imageRepositoryName != null && imageTagOrDigest != null) {
+            IRepository repository = Repository.fromRepositoryName(this, "ClamavLambdaImageRepository",
+                    imageRepositoryName);
+            return DockerImageCode.fromEcr(repository,
+                    EcrImageCodeProps.builder().tagOrDigest(imageTagOrDigest).build());
+        }
+
+        DockerImageAsset imageAsset = DockerImageAsset.Builder.create(this, "ClamavLambdaImage")
+                .platform(isCloudShell() ? Platform.LINUX_AMD64 : Platform.LINUX_ARM64)
+                .directory(".")
+                .build();
+
+        return DockerImageCode.fromEcr(imageAsset.getRepository(),
+                EcrImageCodeProps.builder().tagOrDigest(imageAsset.getImageTag()).build());
     }
 
     /**

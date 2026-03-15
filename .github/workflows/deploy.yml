@@ -21,16 +21,14 @@ permissions:
 concurrency: deploy
 
 jobs:
-  deploy:
-    strategy:
-      matrix:
-        # Define which environments you want to deploy
-        # Environments are setup in GutHub
-        environment: [ stage-us-east, prod-us-east ]
-    runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-{0}-runner-{1}-{2}', matrix.environment, github.run_id, github.run_attempt) }}
-    environment: ${{ matrix.environment }}
-    
-      
+  deploy-stage:
+    name: deploy (stage-us-east)
+    runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-stage-us-east-runner-{0}-{1}', github.run_id, github.run_attempt) }}
+    environment: stage-us-east
+    outputs:
+      image_manifest_b64: ${{ steps.capture-image.outputs.image_manifest_b64 }}
+      image_manifest_media_type: ${{ steps.capture-image.outputs.image_manifest_media_type }}
+
     steps:
     - name: Checkout Code
       uses: actions/checkout@v6
@@ -114,6 +112,53 @@ jobs:
         sleep 30
         echo "Running Virus Scan Validation Tests..."
         mvn --batch-mode --no-transfer-progress exec:java
+
+    - name: Capture Tested Image Manifest For Promotion
+      id: capture-image
+      working-directory: ./cdk
+      run: |
+        FUNCTION_NAME=$(aws cloudformation describe-stacks \
+          --stack-name ClamavLambdaStack \
+          --query "Stacks[0].Outputs[?OutputKey=='ClamavLambdaStackLambdaName'].OutputValue" \
+          --output text)
+
+        RESOLVED_IMAGE_URI=$(aws lambda get-function \
+          --function-name "$FUNCTION_NAME" \
+          --query 'Code.ResolvedImageUri' \
+          --output text)
+
+        REPOSITORY_NAME="${RESOLVED_IMAGE_URI%@*}"
+        REPOSITORY_NAME="${REPOSITORY_NAME#*.amazonaws.com/}"
+        IMAGE_DIGEST="${RESOLVED_IMAGE_URI#*@}"
+
+        IMAGE_MANIFEST=$(aws ecr batch-get-image \
+          --repository-name "$REPOSITORY_NAME" \
+          --image-ids imageDigest="$IMAGE_DIGEST" \
+          --accepted-media-types \
+            application/vnd.docker.distribution.manifest.v2+json \
+            application/vnd.oci.image.manifest.v1+json \
+          --query 'images[0].imageManifest' \
+          --output text)
+
+        IMAGE_MANIFEST_MEDIA_TYPE=$(aws ecr batch-get-image \
+          --repository-name "$REPOSITORY_NAME" \
+          --image-ids imageDigest="$IMAGE_DIGEST" \
+          --accepted-media-types \
+            application/vnd.docker.distribution.manifest.v2+json \
+            application/vnd.oci.image.manifest.v1+json \
+          --query 'images[0].imageManifestMediaType' \
+          --output text)
+
+        if [ -z "$IMAGE_MANIFEST_MEDIA_TYPE" ] || [ "$IMAGE_MANIFEST_MEDIA_TYPE" = "None" ]; then
+          IMAGE_MANIFEST_MEDIA_TYPE="application/vnd.docker.distribution.manifest.v2+json"
+        fi
+
+        IMAGE_MANIFEST_B64=$(printf '%s' "$IMAGE_MANIFEST" | base64 -w 0)
+
+        {
+          echo "image_manifest_b64=$IMAGE_MANIFEST_B64"
+          echo "image_manifest_media_type=$IMAGE_MANIFEST_MEDIA_TYPE"
+        } >> "$GITHUB_OUTPUT"
         
     - name: Rollback Lambda Alias if Tests Fail
       if: failure() && steps.scan-tests.outcome == 'failure'
@@ -135,3 +180,88 @@ jobs:
             --function-name "$FUNCTION_NAME" \
             --name "$ALIAS_NAME" \
             --function-version "$PREV_VERSION"
+
+  deploy-prod:
+    name: deploy (prod-us-east)
+    needs: deploy-stage
+    runs-on: ubuntu-latest
+    environment: prod-us-east
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v5
+      with:
+        java-version: '21'
+        distribution: 'corretto'
+        cache: maven
+
+    - name: Install the latest AWS CDK
+      run: |
+        npm install -g aws-cdk
+        echo "Node Version: $(node -v)"
+        echo "CDK Version: $(cdk version)"
+
+    - name: Setup AWS Credentials
+      id: aws-creds
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        mask-aws-account-id: true
+
+    - name: Add AWS_ACCOUNT_ID to Environment
+      run: echo "AWS_ACCOUNT_ID=${{ steps.aws-creds.outputs.aws-account-id }}" >> $GITHUB_ENV
+
+    - name: Build CDK project without rebuilding the Lambda image
+      run: >
+        mvn -pl shared-model,cdk -am install -DskipTests
+        --no-transfer-progress --quiet
+
+    - name: Construct bucketNames Context
+      run: |
+        echo "BUCKET_NAMES=${{ vars.S3_BUCKET_NAMES }}" >> $GITHUB_ENV
+        echo "Final list of bucket names to deploy against: ${{ vars.S3_BUCKET_NAMES }}"
+
+    - name: Ensure CDK is bootstraped and up to date
+      working-directory: ./cdk
+      run: cdk bootstrap --ci=true aws://${AWS_ACCOUNT_ID}/${{ vars.AWS_REGION || 'us-east-1' }}
+
+    - name: Promote Tested Image Into Production ECR
+      run: |
+        TARGET_REPOSITORY_NAME="cdk-hnb659fds-container-assets-${AWS_ACCOUNT_ID}-${{ vars.AWS_REGION || 'us-east-1' }}"
+        PROMOTED_IMAGE_TAG="promoted-${GITHUB_SHA}"
+
+        printf '%s' '${{ needs.deploy-stage.outputs.image_manifest_b64 }}' | base64 -d > /tmp/promoted-image-manifest.json
+        IMAGE_MANIFEST="$(tr -d '\n' < /tmp/promoted-image-manifest.json)"
+
+        aws ecr put-image \
+          --repository-name "$TARGET_REPOSITORY_NAME" \
+          --image-manifest "$IMAGE_MANIFEST" \
+          --image-manifest-media-type "${{ needs.deploy-stage.outputs.image_manifest_media_type }}" \
+          --image-tag "$PROMOTED_IMAGE_TAG"
+
+        PROMOTED_IMAGE_DIGEST=$(aws ecr describe-images \
+          --repository-name "$TARGET_REPOSITORY_NAME" \
+          --image-ids imageTag="$PROMOTED_IMAGE_TAG" \
+          --query 'imageDetails[0].imageDigest' \
+          --output text)
+
+        echo "PROMOTED_IMAGE_REPOSITORY_NAME=$TARGET_REPOSITORY_NAME" >> $GITHUB_ENV
+        echo "PROMOTED_IMAGE_DIGEST=$PROMOTED_IMAGE_DIGEST" >> $GITHUB_ENV
+
+    - name: Deploy CDK Stack Using Promoted Image
+      working-directory: ./cdk
+      env:
+        ONLY_TAG_INFECTED: ${{ vars.ONLY_TAG_INFECTED }}
+        VALIDATION_BUCKET: ${{ vars.VALIDATION_BUCKET }}
+      run: >
+        cdk deploy --require-approval=never --ci=true
+        --context bucketNames="${{ env.BUCKET_NAMES }}"
+        --context addBucketPolicy="${{ vars.ADD_BUCKET_POLICY || 'false' }}"
+        --context imageRepositoryName="${{ env.PROMOTED_IMAGE_REPOSITORY_NAME }}"
+        --context imageTagOrDigest="${{ env.PROMOTED_IMAGE_DIGEST }}"
