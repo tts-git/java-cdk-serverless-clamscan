@@ -15,7 +15,7 @@ RUN mkdir -p /tmp/clamav_libs && \
     LIBCLAMAV=$(find /usr/lib -path '*/libclamav.so.*' | head -n 1) && \
     echo "Collecting runtime libraries for /usr/bin/clamscan and $LIBCLAMAV" && \
     ldd /usr/bin/clamscan "$LIBCLAMAV" | \
-    awk '/=> \// { print $3 } /^\/[^[:space:]]+/ { print $1 }' | \
+    awk '/=> \// { print $3 } $1 ~ /^\// && $2 ~ /^\(/ { print $1 }' | \
     sort -u | \
     xargs -I '{}' cp -v '{}' /tmp/clamav_libs/
 
