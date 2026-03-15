@@ -27,21 +27,13 @@ jobs:
         # Define which environments you want to deploy
         # Environments are setup in GutHub
         environment: [ stage-us-east, prod-us-east ]
-    runs-on: ubuntu-latest
+    runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-{0}-runner-{1}-{2}', matrix.environment, github.run_id, github.run_attempt) }}
     environment: ${{ matrix.environment }}
     
       
     steps:
     - name: Checkout Code
       uses: actions/checkout@v6
-    
-    # Required to build arm64 images on x86  
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v4
-
-    # Required to build arm64 images on x86
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
     
     # Use AWS Java to build
     - name: Set up JDK 21
