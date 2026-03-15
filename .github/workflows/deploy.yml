@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ format('codebuild-java-cdk-serverless-clamscan-stage-us-east-runner-{0}-{1}', github.run_id, github.run_attempt) }}
     environment: stage-us-east
     outputs:
-      resolved_image_uri: ${{ steps.capture-image.outputs.resolved_image_uri }}
+      resolved_image_uri: ${{ steps.capture_image.outputs.resolved_image_uri }}
 
     steps:
     - name: Checkout Code
@@ -118,7 +118,7 @@ jobs:
         mvn --batch-mode --no-transfer-progress exec:java
 
     - name: Capture Tested Image Manifest For Promotion
-      id: capture-image
+      id: capture_image
       working-directory: ./cdk
       run: |
         FUNCTION_NAME=$(aws cloudformation describe-stacks \
@@ -212,6 +212,11 @@ jobs:
     - name: Promote Tested Image Into Production ECR
       run: |
         SOURCE_IMAGE_URI="${{ needs.deploy-stage.outputs.resolved_image_uri }}"
+        if [ -z "$SOURCE_IMAGE_URI" ]; then
+          echo "Stage job did not provide a resolved image URI for promotion." >&2
+          exit 1
+        fi
+
         SOURCE_REGISTRY="${SOURCE_IMAGE_URI%%/*}"
         TARGET_REPOSITORY_NAME="cdk-hnb659fds-container-assets-${AWS_ACCOUNT_ID}-${{ vars.AWS_REGION || 'us-east-1' }}"
         PROMOTED_IMAGE_TAG="promoted-${GITHUB_SHA}"
