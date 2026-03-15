@@ -79,7 +79,7 @@ Assuming you have all requried software, CDK is bootstrapped and you have valid 
 
 ```bash
 # Clone Repo
-git clone https://github.com/docwho2/java-cdk-serverless-clamscan.git
+git clone https://github.com/tts-git/java-cdk-serverless-clamscan.git
 
 # CD into main repo dir
 cd java-cdk-serverless-clamscan
@@ -111,7 +111,7 @@ targets x86 platform.  For production you'll likely integrate into your own pipe
 
 ```bash
 # Clone Repo
-git clone https://github.com/docwho2/java-cdk-serverless-clamscan.git
+git clone https://github.com/tts-git/java-cdk-serverless-clamscan.git
 
 # CD into main repo dir
 cd java-cdk-serverless-clamscan
@@ -139,16 +139,25 @@ cdk deploy --context bucketNames="bucketName1,bucketName2"
 
 ## 🚀 Forking repository and utlizing the GitHub Workflow
 
-The [GitHub Workflow](.github/workflows/deploy.yml) included in the repository can be used to a create a full CI/CD pipeline as changes are comitted to the main branch or on a schedule to keep your virus definitions up to date.
+The [GitHub Workflow](.github/workflows/deploy.yml) included in the repository can be used to create a full CI/CD pipeline as changes are committed to the main branch or on a schedule to keep your virus definitions up to date.
+
+The current release flow is:
+
+1. `deploy-stage` runs first on a CodeBuild-hosted GitHub runner inside AWS so the Docker build happens from your AWS network instead of a shared GitHub runner IP.
+2. Stage deploys the Lambda image, runs the validation tests, and captures the exact deployed ECR image URI.
+3. `deploy-prod` runs only after stage succeeds.
+4. Prod pulls that exact tested image from the stage ECR registry, pushes it into the prod CDK bootstrap ECR repository, and deploys by image digest.
+
+This means production no longer rebuilds the image. It promotes the exact image that already deployed and tested cleanly in stage.
 
 To allow the workflow to operate on your AWS environment, you can use several methods, but in this case we are using the recommended [OIDC method](https://github.com/aws-actions/configure-aws-credentials#OIDC) that requires some setup inside your account.  The workflow uses this to setup Credentials:
 
 ```yaml
 - name: Setup AWS Credentials
       id: aws-creds
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@v6
       with:
-        aws-region: ${{ matrix.region }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
         # The full role ARN if you are using OIDC
         # https://github.com/aws-actions/configure-aws-credentials#oidc
         role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -168,26 +177,29 @@ If you are going to use [Access Key and Secret](https://repost.aws/knowledge-cen
 - Create a Secret named **AWS_ACCESS_KEY_ID** and set to the Access Key ID
 - Create a Secret named **AWS_SECRET_ACCESS_KEY** and set to the Secret Access Key
 
-The workflow is designed for a matrix job based on [environments](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/using-environments-for-deployment).  Each environemnt should 
-generally represent a unique deployment within a region and/or account.  We use seperate accounts for staging versus production.
+The workflow is designed around GitHub [environments](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/using-environments-for-deployment). Each environment should
+generally represent a unique deployment within a region and/or account. We use separate accounts for staging versus production.
 
 - stage-us-east
-  - This is staging account used for testing
-  - We set VALIDATION_BUCKET for this environment so tests run to validate the resulting container detects infected files correctly
-    - Since the container has all the virus definitions built in, we want to validate it works properly before releasing into production.
+  - This is the staging account used for build, deploy, and validation.
+  - The stage job runs on a CodeBuild-hosted GitHub runner.
+  - We set `VALIDATION_BUCKET` for this environment so tests run to validate the resulting container detects infected files correctly.
+  - Since the container has all the virus definitions built in, we want to validate it works properly before releasing into production.
 - prod-us-east
-  - For this environment we set a [wait timer](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment#wait-timer) of 30 mins
-    - This delays running and deploying into production so if the stage workflow (namely the tests fail) the container is not deployed into production
-    - You could also create protection rules or similar so someone has to approve this deploy vs the simple wait
+  - This is the production account.
+  - The prod job runs on `ubuntu-latest` because it no longer builds the image.
+  - Prod deploy is gated by `needs: deploy-stage`, so it only runs after stage deploy and validation pass.
+  - Prod promotes the exact tested stage image into prod ECR and deploys that digest rather than rebuilding.
+  - If you use separate AWS accounts, the prod deploy role also needs pull access to the stage ECR repository.
 
 ```yaml
 jobs:
-  deploy:
-    strategy:
-      matrix:
-        # Define which environments you want to deploy
-        # Environments are setup in GitHub
-        environment: [ stage-us-east, prod-us-east ]
+  deploy-stage:
+    environment: stage-us-east
+
+  deploy-prod:
+    needs: deploy-stage
+    environment: prod-us-east
 ```
 
 
@@ -218,6 +230,14 @@ The general steps are:
     - The bucket is added to S3_BUCKET_NAMES passed to the CDK deploy so that events for the test bucket also trigger scans
     - This requires manual setup of the validation bucket and placing files in the bucket to coordiate with the [testing code](integration-test/src/main/java/cloud/cleo/clamav/test/VirusScanValidationTest.java) 
     - If validation fails the Lambda is rolled back to the prior version (which would use the last container that is known to work)
+
+For the stage-to-prod promotion flow across separate accounts:
+* The production deploy role must be able to push to the prod CDK bootstrap ECR repository.
+* The production deploy role must also be allowed to pull from the stage CDK bootstrap ECR repository.
+* On the stage ECR repository policy, grant the prod deploy role:
+  - `ecr:BatchGetImage`
+  - `ecr:BatchCheckLayerAvailability`
+  - `ecr:GetDownloadUrlForLayer`
 
 ---
 
