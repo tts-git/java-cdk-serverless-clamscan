@@ -132,7 +132,7 @@ jobs:
         printf '%s' "$RESOLVED_IMAGE_URI" > "$RUNNER_TEMP/resolved-image-uri.txt"
 
     - name: Upload Tested Image URI
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: tested-image-uri
         path: ${{ runner.temp }}/resolved-image-uri.txt
