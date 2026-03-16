@@ -229,9 +229,16 @@ jobs:
         fi
 
         SOURCE_REGISTRY="${SOURCE_IMAGE_URI%%/*}"
+        SOURCE_ACCOUNT_ID="${SOURCE_REGISTRY%%.*}"
         TARGET_REPOSITORY_NAME="cdk-hnb659fds-container-assets-${AWS_ACCOUNT_ID}-${{ vars.AWS_REGION || 'us-east-1' }}"
         PROMOTED_IMAGE_TAG="promoted-${GITHUB_SHA}"
         TARGET_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com/${TARGET_REPOSITORY_NAME}:${PROMOTED_IMAGE_TAG}"
+
+        if [ "$SOURCE_ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]; then
+          echo "Image promotion is running with AWS account ${AWS_ACCOUNT_ID}, but the tested image lives in account ${SOURCE_ACCOUNT_ID}." >&2
+          echo "This account mismatch causes ECR pull/login failures without explicit cross-account access or a stage-account credential step." >&2
+          exit 1
+        fi
 
         aws ecr get-login-password --region "${{ vars.AWS_REGION || 'us-east-1' }}" | \
           docker login --username AWS --password-stdin "$SOURCE_REGISTRY"
