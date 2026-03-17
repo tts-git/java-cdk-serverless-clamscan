@@ -31,7 +31,7 @@ This module defines and deploys the AWS infrastructure that powers the ClamAV vi
 
 ## 🧱 Stack Resources
 
-- ✅ Lambda function (container-based, Java 21, ARM64)
+- ✅ Lambda function (container-based, Java 25, ARM64)
 - ✅ S3 bucket with event notification trigger
 - ✅ IAM roles with scoped permissions for tag access
 
@@ -40,10 +40,10 @@ This module defines and deploys the AWS infrastructure that powers the ClamAV vi
 ## 🛠 Tech Stack
 
 - **AWS CDK (Java)**
-- **Java 21 Lambda Runtime**
+- **Java 25 Lambda Runtime**
 - **Docker (multi-stage build)**
 - **ARM64 container image**
-- **ClamAV (Ubuntu-based)**
+- **ClamAV (AL2023-based)**
 
 ---
 

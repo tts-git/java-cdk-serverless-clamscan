@@ -1,12 +1,12 @@
 # Lambda: ClamAV Virus Scanning Function
 
-This module contains the AWS Lambda implementation for scanning S3 objects for viruses using **ClamAV**. Built with **Java 21**, this high-performance, serverless function uses a **container-based deployment** and leverages the **AWS SDK v2 Async Client with CRT (Common Runtime)** for optimal performance.
+This module contains the AWS Lambda implementation for scanning S3 objects for viruses using **ClamAV**. Built with **Java 25**, this high-performance, serverless function uses a **container-based deployment** and leverages the **AWS SDK v2 Async Client with CRT (Common Runtime)** for optimal performance.
 
 ---
 
 ## 🚀 Features
 
-- ✅ **Java 21** with virtual thread readiness
+- ✅ **Java 25** with virtual thread readiness
 - 🔬 **ClamAV** integration (with up-to-date virus definitions)
 - ☁️ **Asynchronous S3 interactions** via `S3AsyncClient` + CRT (zero-copy, event-driven I/O)
 - 🐳 **Container-based Lambda deployment** using ARM64 base image (faster cold starts, lower cost)
@@ -34,7 +34,7 @@ The `target/lambda-1.0.jar` file is automatically copied to the CDK module durin
 
 ## 🧰 Technologies Used
 
-- Java 21
+- Java 25
 - AWS SDK v2 with CRT
 - Log4j2
 - Maven Shade Plugin

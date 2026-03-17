@@ -3,8 +3,8 @@
 
 set -e
 
-echo "Installing Java 21 (Amazon Corretto)..."
-sudo yum install -y java-21-amazon-corretto-devel
+echo "Installing Java 25 (Amazon Corretto)..."
+sudo yum install -y java-25-amazon-corretto-devel
 
 echo "Verifying Java Version..."
 java -version

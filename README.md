@@ -10,7 +10,7 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 
 | AWS Labs Solution                                  | This Project                                                  |
 |----------------------------------------------------|---------------------------------------------------------------|
-| Projen + Typescript + Python + Node.js + Lambda    | ✅ Pure Java (Java 21) for both Lambda and CDK                |
+| Projen + Typescript + Python + Node.js + Lambda    | ✅ Pure Java (Java 25) for both Lambda and CDK                |
 | ClamAV DB stored in S3 + loaded at runtime, VPC, EFS         | ✅ ClamAV DB bundled in Docker image at build time            |
 | Multiple constructs and wiring layers              | ✅ Single CDK stack, minimal moving parts                     |
 | Manual or external event setup                     | ✅ Dynamically configures bucket notifications + permissions  |
@@ -27,7 +27,7 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 
 - Scans uploaded S3 objects for viruses using **ClamAV**
 - Tags infected/clean files with a `scan-status` object tag
-- Uses **Java 21**, optimized with **AWS SDK v2 + CRT-based async S3 client**
+- Uses **Java 25**, optimized with **AWS SDK v2 + CRT-based async S3 client**
 - Deploys via **container-based AWS Lambda** using **ARM64** for speed and cost efficiency
 - Dynamically wires up **any bucket(s)** via CDK to trigger scan and applies needed IAM permissions
 - Validation as part of pipeline to ensure container properly detects virus files (optional)
@@ -36,7 +36,7 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 
 ## 🛠 Tech Stack
 
-- **Java 21** — modern, high-performance backend language
+- **Java 25** — modern, high-performance backend language
 - **AWS SDK v2 Async (CRT)** — blazing-fast, non-blocking I/O
 - **CDK (Java)** — type-safe infrastructure-as-code
 - **Docker** — multi-stage image with ClamAV + latest definitions
@@ -70,7 +70,7 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 If you have [brew](https://brew.sh) installed (highly recommended) then:
 ```bash
 brew install aws-cdk
-brew install corretto21
+brew install corretto25
 brew install maven
 brew install --cask docker
 ```
