@@ -39,7 +39,7 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 - **Java 25** — modern, high-performance backend language
 - **AWS SDK v2 Async (CRT)** — blazing-fast, non-blocking I/O
 - **CDK (Java)** — type-safe infrastructure-as-code
-- **Docker** — multi-stage image with ClamAV + latest definitions
+- **Docker** — Lambda Java 25 base image with AL2023-native ClamAV packages and build-time definitions
 - **Lambda** — serverless + scalable compute
 - **GitHub Actions** — automated CI/CD pipeline ready to go
 
@@ -65,6 +65,35 @@ The inspiration for this project came from reviewing the [AWS Labs cdk-serverles
 
 ---
 
+## 🧭 Architecture Support
+
+This repo defaults to **ARM64** for normal deployments, but there is also a defined **x86_64** path for AWS CloudShell.
+
+| Scenario | Build Host | Image / Lambda Architecture | Current Support |
+|----------|------------|-----------------------------|-----------------|
+| Local ARM machine (for example Apple Silicon) | ARM | ARM64 | ✅ First-class path |
+| Stage CI in this repo | CodeBuild-hosted GitHub runner in AWS | ARM64 | ✅ First-class path |
+| AWS CloudShell | x86_64 | x86_64 | ✅ Automatic fallback |
+| GitHub prod job | x86_64 GitHub-hosted runner | No image build in prod | ✅ Supported because prod promotes the tested image |
+| Local x86 workstation | x86_64 | Usually ARM64 target via Docker buildx/QEMU | ⚠️ Possible, but not the primary documented path |
+| Long-lived x86 Lambda deployment outside CloudShell | Any | x86_64 | ⚠️ Requires an intentional stack/workflow change |
+
+### What this means in practice
+
+- The CDK stack defaults to `ARM_64` and `linux/arm64` for the Lambda and Docker image.
+- If the deployment is running in **AWS CloudShell**, the stack automatically switches to `X86_64` and `linux/amd64`.
+- The production workflow runs on an x86 GitHub-hosted runner, but that is fine because it does **not** rebuild the image. It promotes the exact image that already built and passed validation in stage.
+- If you are on a normal x86 laptop or VM, Docker may still be able to build the ARM image if `buildx`/QEMU emulation is available. That is a host capability question, not a Lambda runtime limitation.
+- If you want a long-lived **x86 Lambda** outside CloudShell, the current repo does not expose a generic architecture toggle yet. You would need to change the CDK architecture/platform selection to target x86 intentionally.
+
+### Why ARM is still the default
+
+- Lower Lambda cost for CPU-bound scanning work
+- Better fit for the current validated CI/CD path
+- Keeps the deployed runtime aligned with the image that stage builds and validates
+
+---
+
 ## 🚀 CLI Build & Deploy (Mac / ARM Platform)
 
 If you have [brew](https://brew.sh) installed (highly recommended) then:
@@ -75,7 +104,7 @@ brew install maven
 brew install --cask docker
 ```
 
-Assuming you have all requried software, CDK is bootstrapped and you have valid AWS Keys set then:
+Assuming you have all required software, CDK is bootstrapped and you have valid AWS keys set then:
 
 ```bash
 # Clone Repo
@@ -84,7 +113,7 @@ git clone https://github.com/tts-git/java-cdk-serverless-clamscan.git
 # CD into main repo dir
 cd java-cdk-serverless-clamscan
 
-# Build the Project and copy Lambda JAR to Docker context
+# Build the project and copy the Lambda JAR into the CDK Docker context
 mvn install
 
 # Change to CDK directory for deployment
@@ -104,10 +133,19 @@ cdk deploy --context bucketNames="bucketName1,bucketName2"
 
 ## 🚀 CLI Build & Deploy x86 (AWS CloudShell)
 
-Easiest method to get deployed since this is a clean environment that will have AWS Creds all loaded assuming you have a role that 
-grants all the needed permissions (Administrator or Power User).  If you just want to test it out quickly this is will get you going fast and easy! 
-Since its quite more complicated to get CloudShell to build arm64, this will build everything for x86.  The CDK code detects CloudShell and then 
-targets x86 platform.  For production you'll likely integrate into your own pipeline strategy or use a GitHub Workflow which can build arm64 easily.
+Easiest method to get deployed since this is a clean environment that will have AWS credentials all loaded assuming you have a role that
+grants all the needed permissions (Administrator or Power User). If you just want to test it out quickly this will get you going fast and easy.
+
+CloudShell is treated as an x86 convenience path. The CDK code detects CloudShell and builds/deploys `linux/amd64` there, while normal deployments target `linux/arm64`.
+For production, prefer the staged workflow below or another CI path that builds the ARM image intentionally.
+
+This path is best for:
+
+- trying the project quickly in an AWS-managed shell
+- one-off x86 validation
+- debugging an x86-compatible image path without changing the default ARM deployment behavior
+
+This path is not intended to be the primary production release mechanism for this repo.
 
 ```bash
 # Clone Repo
@@ -137,13 +175,26 @@ cdk bootstrap
 cdk deploy --context bucketNames="bucketName1,bucketName2"
 ```
 
-## 🚀 Forking repository and utlizing the GitHub Workflow
+## 🚀 Forking repository and utilizing the GitHub Workflow
 
 The [GitHub Workflow](.github/workflows/deploy.yml) included in the repository can be used to create a full CI/CD pipeline as changes are committed to the main branch or on a schedule to keep your virus definitions up to date.
 
+Important prerequisites before you fork and expect the workflow to run:
+
+- `deploy-stage` is not using a standard GitHub-hosted runner. It expects a CodeBuild-hosted GitHub Actions runner in your AWS account.
+- The runner name is currently hard-coded in [deploy.yml](.github/workflows/deploy.yml), so your fork must either create a matching runner or update the workflow to your own runner label.
+- `deploy-prod` runs on `ubuntu-latest`, but it does not build the Lambda image. It only promotes the exact tested stage image into the production ECR repository and deploys by digest.
+- GitHub-hosted ARM runners now exist, but this repo still builds stage inside AWS by design so the tested image is created and validated from the staging account/network.
+
+If you want to adapt this workflow for x86:
+
+- The current workflow only auto-selects x86 in **CloudShell**.
+- A GitHub-hosted x86 runner can still deploy this repo as-is if it is building an **ARM** image via Docker buildx/emulation.
+- If you want the workflow to build and deploy an **x86 Lambda image intentionally**, you should update the CDK architecture/platform logic and then validate that x86 image in stage before promoting it.
+
 The current release flow is:
 
-1. `deploy-stage` runs first on a CodeBuild-hosted GitHub runner inside AWS so the Docker build happens from your AWS network instead of a shared GitHub runner IP.
+1. `deploy-stage` runs first on a CodeBuild-hosted GitHub runner inside AWS so the Docker build happens in the staging account environment.
 2. Stage deploys the Lambda image, runs the validation tests, and captures the exact deployed ECR image URI.
 3. `deploy-prod` runs only after stage succeeds.
 4. Prod pulls that exact tested image from the stage ECR registry, pushes it into the prod CDK bootstrap ECR repository, and deploys by image digest.
@@ -167,7 +218,7 @@ To allow the workflow to operate on your AWS environment, you can use several me
         mask-aws-account-id: true
 ```
 
-You will need to [create secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-environment) to use OIDC or Keys.  Set the role or Keys, but not both:
+You will need to [create secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions#creating-secrets-for-an-environment) to use OIDC or keys. Set the role or keys, but not both:
 
 If you are using the [OIDC method](https://github.com/aws-actions/configure-aws-credentials#OIDC)
 - Create a Secret named **AWS_ROLE_TO_ASSUME** and set it to the full ARN of the role
@@ -181,8 +232,8 @@ The workflow is designed around GitHub [environments](https://docs.github.com/en
 generally represent a unique deployment within a region and/or account. We use separate accounts for staging versus production.
 
 - stage-us-east
-  - This is the staging account used for build, deploy, and validation.
-  - The stage job runs on a CodeBuild-hosted GitHub runner.
+  - This is the staging account used for build, deploy, validation, and source-image publication.
+  - The stage job runs on a CodeBuild-hosted GitHub runner that you must provision in AWS.
   - We set `VALIDATION_BUCKET` for this environment so tests run to validate the resulting container detects infected files correctly.
   - Since the container has all the virus definitions built in, we want to validate it works properly before releasing into production.
 - prod-us-east
@@ -220,7 +271,7 @@ The general steps are:
   - **AWS_REGION** to deploy to.  Defaults to **us-east-1** if not set.
   - **ADD_BUCKET_POLICY** to have CDK set an appropriate Bucket Policy to deny Reads on INFECTED files (defaults to false).  Be careful by setting to true because if you have an existing policy it will be replaced.
   - **S3_BUCKET_NAMES** is a comma separated list of S3 bucket names to perform scanning on
-    - CDK deployment will allow the Container Lambda to Read Object and write tags and subscribe to Obect Create events to trigger the scan
+    - CDK deployment will allow the container Lambda to read objects, write tags, and subscribe to ObjectCreated events to trigger the scan
   - Set **ONLY_TAG_INFECTED** to "true" or "false"
     - When true, only infected files will get tagged with INFECTED.  This is the default if you don't set this.
     - When false tagging is applied immediately as files are processed
@@ -228,7 +279,9 @@ The general steps are:
         - Then a terminating tag is applied after scanning is done (or errors) -> CLEAN,INFECTED,ERROR
   - If you set **VALIDATION_BUCKET** to an S3 bucket name this indicates you want to run validation tests for this environment
     - The bucket is added to S3_BUCKET_NAMES passed to the CDK deploy so that events for the test bucket also trigger scans
-    - This requires manual setup of the validation bucket and placing files in the bucket to coordiate with the [testing code](integration-test/src/main/java/cloud/cleo/clamav/test/VirusScanValidationTest.java) 
+    - This requires manual setup of the validation bucket and placing files in the bucket to coordinate with the [testing code](integration-test/src/main/java/cloud/cleo/clamav/test/VirusScanValidationTest.java)
+    - The current test suite expects a known infected sample (`eicar.txt`), a known clean file (`NotInfectedFile.pdf`), and an oversized file (`large-test-file.zip`)
+    - `VALIDATION_BUCKET` also requires `ONLY_TAG_INFECTED=false`, because the clean-file validation asserts a terminal `CLEAN` tag
     - If validation fails the Lambda is rolled back to the prior version (which would use the last container that is known to work)
 
 For the stage-to-prod promotion flow across separate accounts:
@@ -243,7 +296,7 @@ For the stage-to-prod promotion flow across separate accounts:
 
 ## 📌 Applying S3 Bucket Policy
 
-The CDK deploy can create a [S3 Bucket Polcy](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html?icmpid=docs_amazons3_console) policy for you but you should ensure there is no existing policy (Maybe for CloudFront for example).
+The CDK deploy can create a [S3 Bucket Policy](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html?icmpid=docs_amazons3_console) policy for you but you should ensure there is no existing policy (maybe for CloudFront for example).
 You can manually apply a policy given the examples below (safest) which is exactly what the CDK code does.
 
 If you opt to tag only infected files, then its rather simple policy that should deny reads on infected files:

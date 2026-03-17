@@ -9,8 +9,8 @@ This module contains the AWS Lambda implementation for scanning S3 objects for v
 - ✅ **Java 25** with virtual thread readiness
 - 🔬 **ClamAV** integration (with up-to-date virus definitions)
 - ☁️ **Asynchronous S3 interactions** via `S3AsyncClient` + CRT (zero-copy, event-driven I/O)
-- 🐳 **Container-based Lambda deployment** using ARM64 base image (faster cold starts, lower cost)
-- 🧠 **Smart object tagging**: adds `scan-status` tag (`INFECTED` / `CLEAN`) after scan (depending on config)
+- 🐳 **Container-based Lambda deployment** using the Java 25 Lambda base image with AL2023-native ClamAV packages
+- 🧠 **Smart object tagging**: adds `scan-status` tags such as `SCANNING`, `CLEAN`, `INFECTED`, `ERROR`, or `FILE_SIZE_EXCEEED` depending on config and outcome
 - ⚡ **Parallel processing**: Uses `CompletableFuture` for high concurrency
 - 🧼 **/tmp-safe**: Streams S3 content directly to `/tmp`, deletes after scan
 
@@ -21,8 +21,8 @@ This module contains the AWS Lambda implementation for scanning S3 objects for v
 1. **Triggered by S3 Event Notification**
 2. **Downloads file** to Lambda `/tmp` using `S3AsyncClient`
 3. **Executes `clamscan`** in a native container image with preloaded virus definitions
-4. **Parses output** to detect infection
-5. **Tags file** in-place with `clamav-status=OK` or `INFECTED`
+4. **Parses output** and only treats the scan as infected when ClamAV reports a real `FOUND` signature
+5. **Tags file** in-place with `scan-status` when configured to do so
 
 ---
 
