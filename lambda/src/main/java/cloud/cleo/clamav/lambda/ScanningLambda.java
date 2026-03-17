@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,7 @@ import software.amazon.awssdk.services.s3.model.Tagging;
  * @author sjensen
  */
 public class ScanningLambda implements RequestHandler<S3EventNotification, Void> {
+    private static final Pattern CLAMAV_FOUND_PATTERN = Pattern.compile("(?m)^.*\\bFOUND$");
 
     // Create an S3 client with CRT Async (better download performance and Async calls)
     final static S3AsyncClient s3Client = S3AsyncClient.crtCreate();
@@ -129,19 +131,13 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                     return;
                 }
 
+                String processOutput;
                 try (final var is = process.getInputStream()) {
-                    log.debug("Process Output: {}", new String(is.readAllBytes()));
+                    processOutput = new String(is.readAllBytes());
+                    log.debug("Process Output: {}", processOutput);
                 }
 
-                // According to ClamAV: 0 means CLEAN, 1 means INFECTED, else ERROR.
-                status = switch (process.exitValue()) {
-                    case 0 ->
-                        ScanStatus.CLEAN;
-                    case 1 ->
-                        ScanStatus.INFECTED;
-                    default ->
-                        ScanStatus.ERROR;
-                };
+                status = determineScanStatus(process.exitValue(), processOutput);
                 log.info("Scan result for {}: {}", key, status);
             } catch (IOException | InterruptedException e) {
                 log.error("Error running clamscan: ", e);
@@ -226,6 +222,24 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
 
     static long getClamScanWaitMillis(int remainingMillis) {
         return Math.max(0, remainingMillis - 10000L);
+    }
+
+    static ScanStatus determineScanStatus(int exitCode, String processOutput) {
+        if (exitCode == 0) {
+            return ScanStatus.CLEAN;
+        }
+
+        if (exitCode == 1) {
+            if (processOutput != null && CLAMAV_FOUND_PATTERN.matcher(processOutput).find()) {
+                return ScanStatus.INFECTED;
+            }
+
+            log.error("clamscan exited with code 1 but did not report a FOUND signature. Treating as ERROR. Output: {}",
+                    processOutput);
+            return ScanStatus.ERROR;
+        }
+
+        return ScanStatus.ERROR;
     }
 
     static Path createTempFilePath(String key) {

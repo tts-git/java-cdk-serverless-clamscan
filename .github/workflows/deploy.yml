@@ -110,6 +110,10 @@ jobs:
         VALIDATION_BUCKET: ${{ vars.VALIDATION_BUCKET }}
         ONLY_TAG_INFECTED: ${{ vars.ONLY_TAG_INFECTED }}
       run: |
+        if [ "${ONLY_TAG_INFECTED}" != "false" ]; then
+          echo "VALIDATION_BUCKET requires ONLY_TAG_INFECTED=false so clean-file validation can assert CLEAN instead of an absent tag." >&2
+          exit 1
+        fi
         echo "Waiting 30 seconds to allow Lambda to finish deploying..."
         sleep 30
         echo "Running Virus Scan Validation Tests..."

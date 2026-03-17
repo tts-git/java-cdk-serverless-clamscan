@@ -36,6 +36,7 @@ public class VirusScanValidationTest {
 
     private static final String BUCKET_NAME = System.getenv("VALIDATION_BUCKET");
     private static final String INFECTED_KEY = "eicar.txt";
+    private static final String CLEAN_KEY = "NotInfectedFile.pdf";
     private static final String OVERSIZED_KEY = "large-test-file.zip";
 
     private static final S3Client s3 = S3Client.create();
@@ -48,6 +49,7 @@ public class VirusScanValidationTest {
         
         // Ensure all tags are cleared before testing starts
         clearTags(INFECTED_KEY);
+        clearTags(CLEAN_KEY);
         clearTags(OVERSIZED_KEY);
         
         //throw new AssertionError("Testing rollback");
@@ -83,7 +85,22 @@ public class VirusScanValidationTest {
             retriggerScan(INFECTED_KEY);
         }
         // Need to wait for scan to complete, which sometimes can take over a minute
-        waitForTagValue(INFECTED_KEY, ScanStatus.INFECTED, Duration.ofMinutes(2));
+        waitForTerminalTagValue(INFECTED_KEY, ScanStatus.INFECTED, Duration.ofMinutes(2));
+    }
+
+    /**
+     * Validate a known clean file tests to be CLEAN. This catches false positives where ClamAV
+     * fails to start but the pipeline still reports files as infected.
+     *
+     * @throws InterruptedException
+     */
+    @Test
+    @Order(3)
+    public void validateScanOfKnownCleanFile() throws InterruptedException {
+        assumeTrue(!ONLY_TAG_INFECTED, "Skipping because clean validation requires ONLY_TAG_INFECTED=false");
+
+        retriggerScan(CLEAN_KEY);
+        waitForTerminalTagValue(CLEAN_KEY, ScanStatus.CLEAN, Duration.ofMinutes(2));
     }
 
     /**
@@ -92,11 +109,11 @@ public class VirusScanValidationTest {
      * @throws InterruptedException
      */
     @Test
-    @Order(3)
+    @Order(4)
     public void validateScanOfOversizedFile() throws InterruptedException {
         retriggerScan(OVERSIZED_KEY);
         // Should be detected before scanning on the S3 Head operation
-        waitForTagValue(OVERSIZED_KEY, ScanStatus.FILE_SIZE_EXCEEED, Duration.ofSeconds(30));
+        waitForTerminalTagValue(OVERSIZED_KEY, ScanStatus.FILE_SIZE_EXCEEED, Duration.ofSeconds(30));
     }
 
     /**
@@ -133,6 +150,37 @@ public class VirusScanValidationTest {
             if (expectedValue.name().equals(actual)) {
                 assertThat(actual).isEqualTo(expectedValue.name());
                 return;
+            }
+
+            Thread.sleep(sleepMillis);
+        }
+
+        throw new AssertionError("Timed out waiting for scan-status tag: " + expectedValue + " on key: " + key);
+    }
+
+    private static void waitForTerminalTagValue(String key, ScanStatus expectedValue, Duration timeout) throws InterruptedException {
+        long timeoutMillis = timeout.toMillis();
+        long sleepMillis = 5000;
+        long start = System.currentTimeMillis();
+
+        while (System.currentTimeMillis() - start <= timeoutMillis) {
+            List<Tag> tags = getTags(key);
+            String actual = tags.stream()
+                    .filter(tag -> SCAN_TAG_NAME.equals(tag.key()))
+                    .map(Tag::value)
+                    .findFirst()
+                    .orElse(null);
+
+            if (expectedValue.name().equals(actual)) {
+                assertThat(actual).isEqualTo(expectedValue.name());
+                return;
+            }
+
+            if (actual != null) {
+                ScanStatus actualStatus = ScanStatus.valueOf(actual);
+                if (actualStatus != ScanStatus.SCANNING) {
+                    throw new AssertionError("Expected scan-status " + expectedValue + " but found " + actualStatus + " on key: " + key);
+                }
             }
 
             Thread.sleep(sleepMillis);
