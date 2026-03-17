@@ -13,8 +13,10 @@ RUN dnf install -y \
 # Refresh definitions during the image build so the Lambda has no runtime
 # dependency on internet access for virus database updates.
 RUN mkdir -p /var/task/clamav_defs && \
-    chmod -R 755 /var/task/clamav_defs && \
-    freshclam --stdout --datadir=/var/task/clamav_defs
+    chown 999:999 /var/task/clamav_defs && \
+    chmod 775 /var/task/clamav_defs && \
+    freshclam --stdout --datadir=/var/task/clamav_defs && \
+    chmod -R a+rX /var/task/clamav_defs
 
 # Copy Lambda function JAR into the image.
 COPY lambda-jar/lambda-1.0.jar ${LAMBDA_TASK_ROOT}/lib/
