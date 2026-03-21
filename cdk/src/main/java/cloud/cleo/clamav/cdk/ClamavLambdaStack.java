@@ -134,8 +134,8 @@ public class ClamavLambdaStack extends Stack {
             // Grant read permissions (to download objects into /tmp to perform scans).
             bucket.grantRead(lambdaFunction);
 
-            // Grant permission to update object tags for the scan result.
-            bucket.grantWrite(lambdaFunction, null, List.of("s3:PutObjectTagging"));
+            // Grant permission to update object tags for both the current object and explicit versionIds from S3 events.
+            bucket.grantWrite(lambdaFunction, null, List.of("s3:PutObjectTagging", "s3:PutObjectVersionTagging"));
 
             // Add the Lambda function as an event target for all object created events.
             bucket.addEventNotification(EventType.OBJECT_CREATED, new LambdaDestination(lambdaAlias));
