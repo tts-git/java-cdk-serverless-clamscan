@@ -88,7 +88,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 log.error("Non-retryable S3 failure during download for bucket: {}, key: {}. Check Lambda IAM, bucket "
                         + "policy, object ownership, and SSE-KMS permissions.", bucket, key, unwrapCompletionException(e));
                 markObjectError(bucket, key);
-                return;
+                throw e;
             }
 
             if (!ONLY_TAG_INFECTED) {
@@ -164,7 +164,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                         + "IAM, bucket policy, object ownership, and SSE-KMS permissions.", bucket, key,
                         unwrapCompletionException(e));
                 markObjectError(bucket, key);
-                return;
+                throw e;
             } finally {
                 try {
                     Files.deleteIfExists(localFilePath);
@@ -191,6 +191,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
 
                 log.error("Non-retryable S3 failure while tagging object with final scan status {} for bucket: {}, key: {}",
                         status, bucket, key, unwrapCompletionException(e));
+                throw e;
             }
 
         });
