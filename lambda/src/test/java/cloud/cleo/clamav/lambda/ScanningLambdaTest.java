@@ -62,4 +62,19 @@ class ScanningLambdaTest {
 
         assertThat(ScanningLambda.unwrapCompletionException(exception)).isSameAs(rootCause);
     }
+
+    @Test
+    void normalizeVersionIdReturnsNullForBlankOrLiteralNull() {
+        assertThat(ScanningLambda.normalizeVersionId(null)).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("   ")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("null")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("NULL")).isNull();
+    }
+
+    @Test
+    void normalizeVersionIdPreservesRealVersionIds() {
+        assertThat(ScanningLambda.normalizeVersionId("GH_tcdr52vHtY7lzAgtb6gHHkRT1QBYy"))
+                .isEqualTo("GH_tcdr52vHtY7lzAgtb6gHHkRT1QBYy");
+    }
 }

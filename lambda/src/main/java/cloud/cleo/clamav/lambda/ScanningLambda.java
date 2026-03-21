@@ -48,8 +48,9 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
         event.getRecords().forEach(record -> {
             String bucket = record.getS3().getBucket().getName();
             String key = record.getS3().getObject().getUrlDecodedKey();
+            String versionId = normalizeVersionId(record.getS3().getObject().getVersionId());
 
-            log.info("Processing file from bucket: {}, key: {}", bucket, key);
+            log.info("Processing file from bucket: {}, key: {}, versionId: {}", bucket, key, versionId);
 
             if (bucket == null || bucket.isEmpty() || key == null || key.isEmpty()) {
                 log.error("Invalid S3 event: bucket and key must be provided");
@@ -61,7 +62,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
             if (size != null) {
                 if (size > MAX_BYTES) {
                     log.warn("Skipping file {} due to size ({} bytes) exceeding max of {} bytes", key, size, MAX_BYTES);
-                    setScanTagStatus(bucket, key, ScanStatus.FILE_SIZE_EXCEEED).join();
+                    setScanTagStatus(bucket, key, versionId, ScanStatus.FILE_SIZE_EXCEEED).join();
                     return;
                 }
             } else {
@@ -76,6 +77,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 GetObjectRequest getObjectRequest = GetObjectRequest.builder()
                         .bucket(bucket)
                         .key(key)
+                        .versionId(versionId)
                         .build();
                 s3Client.getObject(getObjectRequest, localFilePath)
                         .join(); // Wait for completion before proceeding
@@ -87,14 +89,14 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
 
                 log.error("Non-retryable S3 failure during download for bucket: {}, key: {}. Check Lambda IAM, bucket "
                         + "policy, object ownership, and SSE-KMS permissions.", bucket, key, unwrapCompletionException(e));
-                markObjectError(bucket, key);
+                markObjectError(bucket, key, versionId);
                 throw e;
             }
 
             if (!ONLY_TAG_INFECTED) {
                 // Mark the object as SCANNING only after we have a local copy so bucket policy does not block the
                 // Lambda's own GetObject request.
-                setScanTagStatus(bucket, key, ScanStatus.SCANNING).join();
+                setScanTagStatus(bucket, key, versionId, ScanStatus.SCANNING).join();
             }
 
             // Run ClamAV (clamscan) on the downloaded file.
@@ -124,7 +126,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                     process.destroyForcibly();
                     log.error("Not enough execution time left to safely run clamscan. Remaining millis: {}", remainingMillis);
                     if (!ONLY_TAG_INFECTED) {
-                        setScanTagStatus(bucket, key, ScanStatus.ERROR).join();
+                        setScanTagStatus(bucket, key, versionId, ScanStatus.ERROR).join();
                     }
                     return;
                 }
@@ -135,7 +137,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                     process.destroyForcibly();
                     log.error("clamscan process timed out!");
                     if (!ONLY_TAG_INFECTED) {
-                        setScanTagStatus(bucket, key, ScanStatus.ERROR).join(); // Wait for result before exiting
+                        setScanTagStatus(bucket, key, versionId, ScanStatus.ERROR).join(); // Wait for result before exiting
                     }
                     return;
                 }
@@ -163,7 +165,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 log.error("Non-retryable S3 failure while updating scan state for bucket: {}, key: {}. Check Lambda "
                         + "IAM, bucket policy, object ownership, and SSE-KMS permissions.", bucket, key,
                         unwrapCompletionException(e));
-                markObjectError(bucket, key);
+                markObjectError(bucket, key, versionId);
                 throw e;
             } finally {
                 try {
@@ -181,7 +183,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
 
             // Update the S3 object's tagging with the scan result.
             try {
-                setScanTagStatus(bucket, key, status).join(); // Wait for result before exiting
+                setScanTagStatus(bucket, key, versionId, status).join(); // Wait for result before exiting
             } catch (CompletionException e) {
                 if (isRetryableS3Failure(e)) {
                     log.error("Retryable S3 failure while tagging object with final scan status {} for bucket: {}, key: {}",
@@ -203,12 +205,14 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
      *
      * @param bucket
      * @param key
+     * @param versionId
      * @param status
      */
-    private CompletableFuture<PutObjectTaggingResponse> setScanTagStatus(String bucket, String key, ScanStatus status) {
+    private CompletableFuture<PutObjectTaggingResponse> setScanTagStatus(String bucket, String key, String versionId,
+            ScanStatus status) {
         try {
             // Get current tags
-            List<Tag> existingTags = s3Client.getObjectTagging(b -> b.bucket(bucket).key(key))
+            List<Tag> existingTags = s3Client.getObjectTagging(b -> b.bucket(bucket).key(key).versionId(versionId))
                     .join() // Get result now since we need in order to put all tags
                     .tagSet();
 
@@ -233,6 +237,7 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
             PutObjectTaggingRequest putTaggingRequest = PutObjectTaggingRequest.builder()
                     .bucket(bucket)
                     .key(key)
+                    .versionId(versionId)
                     .tagging(tagging)
                     .build();
 
@@ -285,6 +290,13 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
         return current;
     }
 
+    static String normalizeVersionId(String versionId) {
+        if (versionId == null || versionId.isBlank() || "null".equalsIgnoreCase(versionId)) {
+            return null;
+        }
+        return versionId;
+    }
+
     static Path createTempFilePath(String key) {
         String baseName = new File(key).getName();
         String extension = "";
@@ -297,13 +309,13 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
         return Paths.get("/tmp", uniqueName);
     }
 
-    private void markObjectError(String bucket, String key) {
+    private void markObjectError(String bucket, String key, String versionId) {
         if (ONLY_TAG_INFECTED) {
             return;
         }
 
         try {
-            setScanTagStatus(bucket, key, ScanStatus.ERROR).join();
+            setScanTagStatus(bucket, key, versionId, ScanStatus.ERROR).join();
         } catch (CompletionException e) {
             log.warn("Could not tag object with ERROR status for bucket: {}, key: {}", bucket, key,
                     unwrapCompletionException(e));
