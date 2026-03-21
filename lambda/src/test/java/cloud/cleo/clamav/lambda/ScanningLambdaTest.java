@@ -2,7 +2,9 @@ package cloud.cleo.clamav.lambda;
 
 import cloud.cleo.clamav.ScanStatus;
 import static org.assertj.core.api.Assertions.assertThat;
+import java.util.concurrent.CompletionException;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 class ScanningLambdaTest {
 
@@ -31,5 +33,48 @@ class ScanningLambdaTest {
     void determineScanStatusReturnsCleanForExitCodeZero() {
         assertThat(ScanningLambda.determineScanStatus(0, "/tmp/upload.pdf: OK"))
                 .isEqualTo(ScanStatus.CLEAN);
+    }
+
+    @Test
+    void isRetryableS3FailureReturnsFalseForAccessDenied() {
+        CompletionException exception = new CompletionException(S3Exception.builder()
+                .statusCode(403)
+                .message("Access Denied")
+                .build());
+
+        assertThat(ScanningLambda.isRetryableS3Failure(exception)).isFalse();
+    }
+
+    @Test
+    void isRetryableS3FailureReturnsTrueForServerErrors() {
+        CompletionException exception = new CompletionException(S3Exception.builder()
+                .statusCode(503)
+                .message("Service Unavailable")
+                .build());
+
+        assertThat(ScanningLambda.isRetryableS3Failure(exception)).isTrue();
+    }
+
+    @Test
+    void unwrapCompletionExceptionReturnsRootCause() {
+        RuntimeException rootCause = new RuntimeException("boom");
+        CompletionException exception = new CompletionException(new CompletionException(rootCause));
+
+        assertThat(ScanningLambda.unwrapCompletionException(exception)).isSameAs(rootCause);
+    }
+
+    @Test
+    void normalizeVersionIdReturnsNullForBlankOrLiteralNull() {
+        assertThat(ScanningLambda.normalizeVersionId(null)).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("   ")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("null")).isNull();
+        assertThat(ScanningLambda.normalizeVersionId("NULL")).isNull();
+    }
+
+    @Test
+    void normalizeVersionIdPreservesRealVersionIds() {
+        assertThat(ScanningLambda.normalizeVersionId("GH_tcdr52vHtY7lzAgtb6gHHkRT1QBYy"))
+                .isEqualTo("GH_tcdr52vHtY7lzAgtb6gHHkRT1QBYy");
     }
 }
