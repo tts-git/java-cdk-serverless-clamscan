@@ -58,7 +58,7 @@ public enum ScanStatus {
     }
 
     // Max size in bytes to process (100MB is safe given 512MB /tmp in Lambda)
-    public final static int MAX_BYTES = 100000000;
+    public final static int MAX_BYTES = 104857600;
 
     // Function Name for the Lambda
     public static final String LAMBDA_NAME = "ClamavLambdaFunction";
