@@ -24,6 +24,7 @@ import software.amazon.awssdk.services.s3.S3AsyncClient;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectTaggingRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectTaggingResponse;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.Tag;
 import software.amazon.awssdk.services.s3.model.Tagging;
 
@@ -55,22 +56,17 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 return;
             }
 
-            // Check file size before downloading
-            try {
-                long size = s3Client.headObject(b -> b.bucket(bucket).key(key)).join().contentLength();
+            // Object create events include size, so avoid a separate HeadObject call before downloading.
+            Long size = record.getS3().getObject().getSizeAsLong();
+            if (size != null) {
                 if (size > MAX_BYTES) {
                     log.warn("Skipping file {} due to size ({} bytes) exceeding max of {} bytes", key, size, MAX_BYTES);
                     setScanTagStatus(bucket, key, ScanStatus.FILE_SIZE_EXCEEED).join();
                     return;
                 }
-            } catch (CompletionException e) {
-                log.error("Transient S3 failure, triggering retry", e);
-                throw e; // must throw to allow retry
-            }
-
-            if (!ONLY_TAG_INFECTED) {
-                // Set the status to scanning immediately, so download can be denied via policy if desired
-                setScanTagStatus(bucket, key, ScanStatus.SCANNING); // Don't wait for Async response
+            } else {
+                log.warn("S3 event did not include object size for bucket: {}, key: {}. Proceeding with download.", bucket,
+                        key);
             }
 
             // Download the file to /tmp with a unique file name.
@@ -84,8 +80,21 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 s3Client.getObject(getObjectRequest, localFilePath)
                         .join(); // Wait for completion before proceeding
             } catch (CompletionException e) {
-                log.error("Transient S3 failure, triggering retry", e);
-                throw e; // must throw to allow retry
+                if (isRetryableS3Failure(e)) {
+                    log.error("Retryable S3 failure during download for bucket: {}, key: {}", bucket, key, e);
+                    throw e;
+                }
+
+                log.error("Non-retryable S3 failure during download for bucket: {}, key: {}. Check Lambda IAM, bucket "
+                        + "policy, object ownership, and SSE-KMS permissions.", bucket, key, unwrapCompletionException(e));
+                markObjectError(bucket, key);
+                return;
+            }
+
+            if (!ONLY_TAG_INFECTED) {
+                // Mark the object as SCANNING only after we have a local copy so bucket policy does not block the
+                // Lambda's own GetObject request.
+                setScanTagStatus(bucket, key, ScanStatus.SCANNING).join();
             }
 
             // Run ClamAV (clamscan) on the downloaded file.
@@ -146,8 +155,16 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
                 }
                 return;
             } catch (CompletionException e) {
-                log.error("Transient S3 failure, triggering retry", e);
-                throw e; // to trigger retry
+                if (isRetryableS3Failure(e)) {
+                    log.error("Retryable S3 failure while updating scan state for bucket: {}, key: {}", bucket, key, e);
+                    throw e;
+                }
+
+                log.error("Non-retryable S3 failure while updating scan state for bucket: {}, key: {}. Check Lambda "
+                        + "IAM, bucket policy, object ownership, and SSE-KMS permissions.", bucket, key,
+                        unwrapCompletionException(e));
+                markObjectError(bucket, key);
+                return;
             } finally {
                 try {
                     Files.deleteIfExists(localFilePath);
@@ -166,8 +183,14 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
             try {
                 setScanTagStatus(bucket, key, status).join(); // Wait for result before exiting
             } catch (CompletionException e) {
-                log.error("Failed to tag object with final scan status: {}", status, e);
-                throw e; // to trigger retry
+                if (isRetryableS3Failure(e)) {
+                    log.error("Retryable S3 failure while tagging object with final scan status {} for bucket: {}, key: {}",
+                            status, bucket, key, e);
+                    throw e;
+                }
+
+                log.error("Non-retryable S3 failure while tagging object with final scan status {} for bucket: {}, key: {}",
+                        status, bucket, key, unwrapCompletionException(e));
             }
 
         });
@@ -242,6 +265,25 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
         return ScanStatus.ERROR;
     }
 
+    static boolean isRetryableS3Failure(Throwable throwable) {
+        Throwable unwrapped = unwrapCompletionException(throwable);
+        if (unwrapped instanceof S3Exception s3Exception) {
+            int statusCode = s3Exception.statusCode();
+            return statusCode == 408 || statusCode == 429 || statusCode >= 500;
+        }
+
+        // SDK/client-side failures such as timeouts or connection resets are usually worth retrying.
+        return true;
+    }
+
+    static Throwable unwrapCompletionException(Throwable throwable) {
+        Throwable current = throwable;
+        while (current instanceof CompletionException && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
     static Path createTempFilePath(String key) {
         String baseName = new File(key).getName();
         String extension = "";
@@ -252,5 +294,18 @@ public class ScanningLambda implements RequestHandler<S3EventNotification, Void>
 
         String uniqueName = java.util.UUID.randomUUID() + extension;
         return Paths.get("/tmp", uniqueName);
+    }
+
+    private void markObjectError(String bucket, String key) {
+        if (ONLY_TAG_INFECTED) {
+            return;
+        }
+
+        try {
+            setScanTagStatus(bucket, key, ScanStatus.ERROR).join();
+        } catch (CompletionException e) {
+            log.warn("Could not tag object with ERROR status for bucket: {}, key: {}", bucket, key,
+                    unwrapCompletionException(e));
+        }
     }
 }
