@@ -2,9 +2,6 @@
 name: Deploy CDK Stack
 
 on:
-  schedule:
-    # By scheduling the workflow you get an updated image with the latest virus definitions
-    - cron: '0 10 * * 1'  # Run Every Monday at 10:00 UTC
   push:
     branches: [ "main" ]
     paths-ignore:
