@@ -221,7 +221,15 @@ jobs:
       working-directory: ./cdk
       run: cdk bootstrap --ci=true aws://${AWS_ACCOUNT_ID}/${{ vars.AWS_REGION || 'us-east-1' }}
 
+    - name: Install ECR Credential Helper
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends amazon-ecr-credential-helper
+        command -v docker-credential-ecr-login
+
     - name: Promote Tested Image Into Production ECR
+      env:
+        AWS_ECR_DISABLE_CACHE: 'true'
       run: |
         SOURCE_IMAGE_URI="$(cat "$RUNNER_TEMP/tested-image-uri/resolved-image-uri.txt")"
         if [ -z "$SOURCE_IMAGE_URI" ]; then
@@ -234,11 +242,16 @@ jobs:
         PROMOTED_IMAGE_TAG="promoted-${GITHUB_SHA}"
         TARGET_IMAGE_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com/${TARGET_REPOSITORY_NAME}:${PROMOTED_IMAGE_TAG}"
 
-        aws ecr get-login-password --region "${{ vars.AWS_REGION || 'us-east-1' }}" | \
-          docker login --username AWS --password-stdin "$SOURCE_REGISTRY"
-
-        aws ecr get-login-password --region "${{ vars.AWS_REGION || 'us-east-1' }}" | \
-          docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${{ vars.AWS_REGION || 'us-east-1' }}.amazonaws.com"
+        # Use the current AWS role on demand, without persisting ECR auth tokens.
+        # Isolate configuration from any runner login and clean up on failure too.
+        DOCKER_CONFIG="$(mktemp -d "$RUNNER_TEMP/ecr-promotion.XXXXXX")"
+        export DOCKER_CONFIG
+        export AWS_ECR_CACHE_DIR="$DOCKER_CONFIG/ecr"
+        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+        umask 077
+        jq -n --arg source "$SOURCE_REGISTRY" --arg target "${TARGET_IMAGE_URI%%/*}" \
+          '{credHelpers: {($source): "ecr-login", ($target): "ecr-login"}}' \
+          > "$DOCKER_CONFIG/config.json"
 
         docker pull "$SOURCE_IMAGE_URI"
         docker tag "$SOURCE_IMAGE_URI" "$TARGET_IMAGE_URI"
