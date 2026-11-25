@@ -89,6 +89,17 @@ jobs:
       working-directory: ./cdk
       run: cdk bootstrap --ci=true aws://${AWS_ACCOUNT_ID}/${{ vars.AWS_REGION || 'us-east-1' }}
     
+    # Bootstrap upgrades can replace the asset repository policy. Restore the
+    # narrowly scoped cross-account pull grant before production promotion.
+    - name: Ensure Production Can Pull Tested Images
+      env:
+        PROD_PROMOTION_ROLE_ARN: ${{ vars.PROD_PROMOTION_ROLE_ARN || 'arn:aws:iam::359590772493:role/github-oidc-provider-Role-F6vlRCdf8Hkx' }}
+        ECR_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      run: >
+        python3 .github/scripts/ensure_ecr_promotion_access.py
+        "cdk-hnb659fds-container-assets-${AWS_ACCOUNT_ID}-${ECR_REGION}"
+        "$PROD_PROMOTION_ROLE_ARN"
+
     - name: Deploy CDK Stack
       working-directory: ./cdk
       env:

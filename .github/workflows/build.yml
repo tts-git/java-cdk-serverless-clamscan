@@ -16,6 +16,9 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@v7
+
+    - name: Test ECR promotion policy reconciliation
+      run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
      
     # Use AWS Java to build
     - name: Set up JDK 25
